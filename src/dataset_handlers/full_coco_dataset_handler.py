@@ -47,9 +47,19 @@ class CocoDataset(Dataset):
             ToTensorV2()
         ], bbox_params=A.BboxParams(format='yolo', label_fields=['class_labels']))
 
-        self.annotation_path = os.path.join(coco_folder, 'annotations', annotation_file)
-        self.image_dir = os.path.join(coco_folder, 'images',
-                                     annotation_file.replace('instances_', '').replace('.json', ''))
+        # self.annotation_path = os.path.join(coco_folder, 'annotations', annotation_file)
+        # self.image_dir = os.path.join(coco_folder, 'images',
+        #                              annotation_file.replace('instances_', '').replace('.json', ''))
+        
+        kaggle_train_annotation = "/kaggle/input/aquarium-dataset/Aquarium Combined/train/_annotations.coco.json"
+        kaggle_val_annotation = "/kaggle/input/aquarium-dataset/Aquarium Combined/valid/_annotations.coco.json"
+        if not val:
+            self.annotation_path = kaggle_train_annotation #os.path.join(coco_folder, 'annotations', annotation_file)
+            self.image_dir = "/kaggle/input/aquarium-dataset/Aquarium Combined/train/"
+        else :
+            self.annotation_path = kaggle_val_annotation
+            self.image_dir = "/kaggle/input/aquarium-dataset/Aquarium Combined/valid/"
+
 
         self.coco = COCO(self.annotation_path)
         self.image_ids = list(sorted(self.coco.imgs.keys()))
