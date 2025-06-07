@@ -11,7 +11,6 @@ import matplotlib.patches as patches
 
 from src.dataset_handlers.full_coco_dataset_handler import CocoDataset
 
-from src.detection_model_architecture import CustomDetector
 from src.config.config import CLASS_NAMES
 from src.training import train
 from src.save_tools import load_model
@@ -101,17 +100,19 @@ LEARNING_RATE=1e-4
 optimizer = optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=0.01) #, weight_decay=0.0005)
 loss_fn = DFL_CIoU_Loss(num_classes=len(CLASS_NAMES))
 
-BATCH_SIZE=18
+BATCH_SIZE=14
 IM_SIZE=640
 
 train_dataset = CocoDataset(
-    coco_folder='datasets/aquarium',
+    # coco_folder='datasets/aquarium',
+    coco_folder='/content/drive/MyDrive/Aquarium Combined',
     augment_transform=get_train_transform(IM_SIZE)
 )
 
 
 val_dataset = CocoDataset(
-    coco_folder='datasets/aquarium',
+    # coco_folder='datasets/aquarium',
+    coco_folder='/content/drive/MyDrive/Aquarium Combined',
     augment_transform=get_val_transform(IM_SIZE),
     val=True
 )
@@ -268,7 +269,7 @@ val_loader = DataLoader(
     # persistent_workers=True
 )
 # Training
-epochs=1000
+epochs=300
 train(model, train_loader, val_dataloader=val_loader, optimizer=optimizer, loss_fn=loss_fn, 
         class_names=CLASS_NAMES, device=device, epochs=epochs,
         initial_lr=LEARNING_RATE)
