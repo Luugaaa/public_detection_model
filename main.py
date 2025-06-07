@@ -11,8 +11,7 @@ import matplotlib.patches as patches
 
 from src.dataset_handlers.full_coco_dataset_handler import CocoDataset
 
-from src.model_architecture import CustomDetector
-from src.old_loss import DetectionLoss
+from src.detection_model_architecture import CustomDetector
 from src.config.config import CLASS_NAMES
 from src.training import train
 from src.save_tools import load_model
