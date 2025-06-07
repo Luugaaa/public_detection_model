@@ -100,7 +100,7 @@ LEARNING_RATE=1e-4
 optimizer = optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=0.01) #, weight_decay=0.0005)
 loss_fn = DFL_CIoU_Loss(num_classes=len(CLASS_NAMES))
 
-BATCH_SIZE=12
+BATCH_SIZE=10
 IM_SIZE=640
 
 train_dataset = CocoDataset(
