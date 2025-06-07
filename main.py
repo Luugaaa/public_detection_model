@@ -105,13 +105,15 @@ BATCH_SIZE=18
 IM_SIZE=640
 
 train_dataset = CocoDataset(
-    coco_folder='datasets/aquarium',
+    # coco_folder='datasets/aquarium',
+    coco_folder='/content/drive/MyDrive/Aquarium Combined'
     augment_transform=get_train_transform(IM_SIZE)
 )
 
 
 val_dataset = CocoDataset(
-    coco_folder='datasets/aquarium',
+    # coco_folder='datasets/aquarium',
+    coco_folder='/content/drive/MyDrive/Aquarium Combined'
     augment_transform=get_val_transform(IM_SIZE),
     val=True
 )
