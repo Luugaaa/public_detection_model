@@ -11,7 +11,6 @@ import matplotlib.patches as patches
 
 from src.dataset_handlers.full_coco_dataset_handler import CocoDataset
 
-from src.detection_model_architecture import CustomDetector
 from src.config.config import CLASS_NAMES
 from src.training import train
 from src.save_tools import load_model
@@ -106,14 +105,14 @@ IM_SIZE=640
 
 train_dataset = CocoDataset(
     # coco_folder='datasets/aquarium',
-    coco_folder='/content/drive/MyDrive/Aquarium Combined'
+    coco_folder='/content/drive/MyDrive/Aquarium Combined',
     augment_transform=get_train_transform(IM_SIZE)
 )
 
 
 val_dataset = CocoDataset(
     # coco_folder='datasets/aquarium',
-    coco_folder='/content/drive/MyDrive/Aquarium Combined'
+    coco_folder='/content/drive/MyDrive/Aquarium Combined',
     augment_transform=get_val_transform(IM_SIZE),
     val=True
 )

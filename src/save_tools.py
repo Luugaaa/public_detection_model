@@ -2,7 +2,7 @@ import torch
 import cv2
 import numpy as np
 from pathlib import Path
-from src.model_architecture import CustomDetector
+from src.model_architecture import DetectionModel
 
 def compile_and_save_model(model, save_path, example_input=None, compile_mode='reduce-overhead'):
     """
