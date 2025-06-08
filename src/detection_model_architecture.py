@@ -301,7 +301,7 @@ class EnhancedBiFPNNeck(nn.Module):
 class DetectionHead(nn.Module):
     def __init__(self, num_classes=80, max_objects_per_pixel=1, reg_max=16, # For DFL
                  in_channels=256, mid_channels=256,
-                 use_separable_conv_head=True, head_depth=4, dropout_rate=0.1):
+                 use_separable_conv_head=True, head_depth=3, dropout_rate=0.1):
         super().__init__()
         self.num_classes = num_classes
         self.max_objects_per_pixel = max_objects_per_pixel # K
@@ -372,12 +372,12 @@ class DetectionModel(nn.Module):
                  num_classes=80,
                  max_objects_per_pixel=1, # K value
                  reg_max=16, # For DFL
-                 backbone_base_channels=92,
-                 backbone_num_csp_elan_blocks=[3,4,4,3],
-                 fpn_feat_channels=256,    # Increased
-                 num_bifpn_blocks=5,       # Increased from 3
-                 head_mid_channels=256,    # Increased
-                 head_depth=5,
+                 backbone_base_channels=78,
+                 backbone_num_csp_elan_blocks=[3,3,3,3],
+                 fpn_feat_channels=128,    # Increased
+                 num_bifpn_blocks=4,       # Increased from 3
+                 head_mid_channels=128,    # Increased
+                 head_depth=4,
                  use_separable_conv_backbone=True,
                  use_separable_conv_neck=True,
                  use_separable_conv_head=True,
