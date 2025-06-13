@@ -258,7 +258,7 @@ def train(model, train_dataloader, val_dataloader, optimizer, loss_fn, epochs, c
           vis_interval=200, val_epochs=10, epoch_vis_interval=10,
           warmup_epochs=3, initial_lr=3e-4, scheduler_T_max=None, scheduler_eta_min=1e-6,
           no_mosaic_epochs=200, reenable_mosaic_epoch=100, reno_mosaic_epoch=50,
-          freeze_epochs=20, weaning_epochs=50): 
+          freeze_epochs=0, weaning_epochs=50): 
 
     model.to(device)
     if isinstance(loss_fn, torch.nn.Module):
