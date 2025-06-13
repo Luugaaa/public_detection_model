@@ -357,22 +357,40 @@ class DetectionModel(nn.Module): # << MODIFIED: Renamed class
                  dropout_rate=0.1,
                  drop_path_rate=0.07,
                  hint_embedding_dim: int = 128): # << NEW: Hint dimension parameter
-
         super().__init__()
-        # ... (Initialization of num_classes, reg_max, etc. is the same) ...
-        self.strides = [8, 16, 32] # P3, P4, P5
-        self.hint_embedding_dim = hint_embedding_dim
+        self.num_classes = num_classes
+        self.max_objects_per_pixel = max_objects_per_pixel
+        self.reg_max = reg_max
+        self.strides = [8, 16, 32]
+        self.hint_embedding_dim = hint_embedding_dim # << NEW
 
-        # --- Instantiate Modules ---
+        print(f"--- Creating ProgressiveDetectionModel (DFL Ready) ---")
+        # << NEW: Instantiate hint processor if hints are enabled
         if self.hint_embedding_dim > 0:
             self.hint_processor = HintProcessor(num_classes, hint_embedding_dim)
         else:
             self.hint_processor = None
 
-        self.backbone = EnhancedBackbone(...)
-        self.neck = EnhancedBiFPNNeck(...)
+        self.backbone = EnhancedBackbone(
+            base_channels=backbone_base_channels,
+            num_csp_elan_blocks=backbone_num_csp_elan_blocks,
+            feat_channels_proj=fpn_feat_channels,
+            use_separable_conv_backbone=use_separable_conv_backbone,
+            dropout_rate=dropout_rate,
+            drop_path_rate=drop_path_rate
+        )
+
+        self.neck = EnhancedBiFPNNeck(
+            feat_channels=fpn_feat_channels,
+            num_bifpn_blocks=num_bifpn_blocks,
+            num_levels=3,
+            use_separable_conv_neck=use_separable_conv_neck,
+            dropout_rate=dropout_rate,
+            drop_path_rate=drop_path_rate
+        )
 
         self.heads = nn.ModuleList()
+        # << MODIFIED: Update head input channels to include hint dimension
         head_in_channels = fpn_feat_channels
         if self.hint_processor is not None:
             head_in_channels += self.hint_embedding_dim
@@ -382,14 +400,14 @@ class DetectionModel(nn.Module): # << MODIFIED: Renamed class
             self.heads.append(DetectionHead(
                 num_classes=num_classes, max_objects_per_pixel=max_objects_per_pixel,
                 reg_max=reg_max,
-                in_channels=head_in_channels, mid_channels=head_mid_channels,
+                in_channels=head_in_channels, # << MODIFIED
+                mid_channels=head_mid_channels,
                 use_separable_conv_head=use_separable_conv_head, head_depth=head_depth,
                 dropout_rate=dropout_rate
             ))
-
         print(f"--- Model Creation Complete ---")
 
-    # << MODIFIED: The forward pass now implements the new stamping logic >>
+    # << MODIFIED: forward signature to accept optional hints >>
     def forward(self, x: torch.Tensor,
                 label_hints: Optional[List[torch.Tensor]] = None,
                 pos_size_hints: Optional[List[torch.Tensor]] = None) -> dict:
