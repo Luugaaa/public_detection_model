@@ -12,6 +12,7 @@ from torch.amp import autocast, GradScaler
 from collections import deque
 import csv
 import numpy as np 
+import random
 from evaluator import evaluate_model
 from src.detection_model_architecture import DetectionModel
 
@@ -22,8 +23,98 @@ def set_optimizer_lr(optimizer, new_lr):
         param_group['lr'] = new_lr
 
 
-# --- Updated train_step function with AMP enabled ---
-def train_step(images, formatted_targets, optimizer, model, loss_fn, scaler, device):
+# # --- Updated train_step function with AMP enabled ---
+# def train_step(images, formatted_targets, optimizer, model, loss_fn, scaler, device):
+#     """ Performs a single training step using formatted targets from collate_fn """
+#     images = images.to(device)
+#     targets_on_device = {}
+#     for key, tensor in formatted_targets.items():
+#         if isinstance(tensor, torch.Tensor):
+#             targets_on_device[key] = tensor.to(device)
+#         else:
+#             targets_on_device[key] = tensor
+#     optimizer.zero_grad()
+#     with autocast(enabled=scaler.is_enabled(), device_type=('cuda' if torch.cuda.is_available() else 'cpu')):
+#         outputs = model(images)
+#         loss_dict = loss_fn(outputs, targets_on_device)
+#     total_loss = loss_dict.get('total_loss', 0)
+#     box_iou_loss = loss_dict.get('box_iou_loss', torch.tensor(0.0, device=device))
+#     box_dfl_loss = loss_dict.get('box_dfl_loss', torch.tensor(0.0, device=device))
+#     box_loss = box_iou_loss + box_dfl_loss
+#     cls_loss = loss_dict.get('cls_loss', torch.tensor(0.0, device=device))
+#     obj_loss = loss_dict.get('obj_loss', torch.tensor(0.0, device=device))
+#     if total_loss == 0 and (box_loss.item() != 0 or cls_loss.item() != 0 or obj_loss.item() != 0):
+#          total_loss = box_loss + cls_loss + obj_loss
+#     scaler.scale(total_loss).backward()
+#     torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=10.0)
+#     scaler.step(optimizer)
+#     scaler.update()
+#     return total_loss.detach(), box_loss.detach(), cls_loss.detach(), obj_loss.detach()
+
+
+# # --- Updated validate function ---
+# def validate(model, dataloader, loss_fn, device, epoch, class_names, save_folder):
+#     model.eval()
+#     total_loss_val = 0
+#     total_box_loss_val = 0
+#     total_cls_loss_val = 0
+#     total_obj_loss_val = 0
+#     batch_count = 0
+#     visualized_val = False
+#     os.makedirs(save_folder, exist_ok=True)
+#     val_progress = tqdm(dataloader, desc=f"Validation Epoch {epoch}", leave=False)
+#     with torch.no_grad():
+#         for batch_idx, (images, formatted_targets, raw_targets_list) in enumerate(val_progress):
+#             images = images.to(device)
+#             targets_on_device = {}
+#             for key, tensor in formatted_targets.items():
+#                 if isinstance(tensor, torch.Tensor): targets_on_device[key] = tensor.to(device)
+#                 else: targets_on_device[key] = tensor
+#             outputs = model(images)
+#             loss_dict = loss_fn(outputs, targets_on_device)
+#             loss = loss_dict.get('total_loss', 0)
+#             box_iou_loss = loss_dict.get('box_iou_loss', torch.tensor(0.0, device=device))
+#             box_dfl_loss = loss_dict.get('box_dfl_loss', torch.tensor(0.0, device=device))
+#             box_loss = box_iou_loss + box_dfl_loss
+#             cls_loss = loss_dict.get('cls_loss', torch.tensor(0.0, device=device))
+#             obj_loss = loss_dict.get('obj_loss', torch.tensor(0.0, device=device))
+#             if loss == 0 and (box_loss.item() != 0 or cls_loss.item() != 0 or obj_loss.item() != 0):
+#                 loss = box_loss + cls_loss + obj_loss
+#             total_loss_val += loss.item()
+#             total_box_loss_val += box_loss.item()
+#             total_cls_loss_val += cls_loss.item()
+#             total_obj_loss_val += obj_loss.item()
+#             batch_count += 1
+#             if not visualized_val:
+#                  print(f"\nGenerating validation visualization for epoch {epoch} (first batch)...")
+#                  visualize_training_batch(
+#                      model=model,
+#                      images=images.cpu(),
+#                      targets=raw_targets_list,
+#                      class_names=class_names,
+#                      device=device,
+#                      epoch=epoch,
+#                      batch_idx=batch_idx,
+#                      save_folder=save_folder,
+#                  )
+#                  visualized_val = True
+#             if batch_idx % 10 == 0:
+#                  val_progress.set_postfix({
+#                      "Loss": f"{loss.item():.4f}",
+#                      "Box": f"{box_loss.item():.4f}",
+#                      "Cls": f"{cls_loss.item():.4f}",
+#                      "Obj": f"{obj_loss.item():.4f}"
+#                  })
+#     avg_loss = total_loss_val / batch_count if batch_count > 0 else 0
+#     avg_box_loss = total_box_loss_val / batch_count if batch_count > 0 else 0
+#     avg_cls_loss = total_cls_loss_val / batch_count if batch_count > 0 else 0
+#     avg_obj_loss = total_obj_loss_val / batch_count if batch_count > 0 else 0
+#     print(f"Validation Epoch {epoch} Avg Loss: {avg_loss:.4f} [Box:{avg_box_loss:.4f}, Cls:{avg_cls_loss:.4f}, Obj:{avg_obj_loss:.4f}]")
+#     model.train()
+#     return avg_loss, avg_box_loss, avg_cls_loss, avg_obj_loss
+
+def train_step(images, formatted_targets, optimizer, model, loss_fn, scaler, device,
+               label_hints=None, pos_size_hints=None):
     """ Performs a single training step using formatted targets from collate_fn """
     images = images.to(device)
     targets_on_device = {}
@@ -32,10 +123,19 @@ def train_step(images, formatted_targets, optimizer, model, loss_fn, scaler, dev
             targets_on_device[key] = tensor.to(device)
         else:
             targets_on_device[key] = tensor
+
+    # << NEW: Move hints to device if they are provided >>
+    if label_hints:
+        label_hints = [h.to(device) for h in label_hints]
+    if pos_size_hints:
+        pos_size_hints = [h.to(device) for h in pos_size_hints]
+
     optimizer.zero_grad()
     with autocast(enabled=scaler.is_enabled(), device_type=('cuda' if torch.cuda.is_available() else 'cpu')):
-        outputs = model(images)
+        # << MODIFIED: Pass hints to the model >>
+        outputs = model(images, label_hints=label_hints, pos_size_hints=pos_size_hints)
         loss_dict = loss_fn(outputs, targets_on_device)
+
     total_loss = loss_dict.get('total_loss', 0)
     box_iou_loss = loss_dict.get('box_iou_loss', torch.tensor(0.0, device=device))
     box_dfl_loss = loss_dict.get('box_dfl_loss', torch.tensor(0.0, device=device))
@@ -69,7 +169,10 @@ def validate(model, dataloader, loss_fn, device, epoch, class_names, save_folder
             for key, tensor in formatted_targets.items():
                 if isinstance(tensor, torch.Tensor): targets_on_device[key] = tensor.to(device)
                 else: targets_on_device[key] = tensor
-            outputs = model(images)
+
+            # << MODIFIED: Pass None for hints during validation to get true performance >>
+            outputs = model(images, label_hints=None, pos_size_hints=None)
+
             loss_dict = loss_fn(outputs, targets_on_device)
             loss = loss_dict.get('total_loss', 0)
             box_iou_loss = loss_dict.get('box_iou_loss', torch.tensor(0.0, device=device))
@@ -145,7 +248,8 @@ def evaluate(model_path, eval_val_loader):
 def train(model, train_dataloader, val_dataloader, optimizer, loss_fn, epochs, class_names, device,
           vis_interval=200, val_epochs=10, epoch_vis_interval=10,
           warmup_epochs=3, initial_lr=3e-4, scheduler_T_max=None, scheduler_eta_min=1e-6,
-          no_mosaic_epochs=200, reenable_mosaic_epoch=100, reno_mosaic_epoch=50): 
+          no_mosaic_epochs=200, reenable_mosaic_epoch=100, reno_mosaic_epoch=50,
+          weaning_epochs=50): 
 
     model.to(device)
     if isinstance(loss_fn, torch.nn.Module):
@@ -201,6 +305,10 @@ def train(model, train_dataloader, val_dataloader, optimizer, loss_fn, epochs, c
             'epoch', 'batch', 'type',
             'total_loss', 'box_loss', 'cls_loss', 'obj_loss', 'lr'
         ])
+
+    p_hint = 0.0
+    print(f"Progressive Learning Enabled: Hints will be phased out over {weaning_epochs} epochs.")
+
 
     log_interval = min(vis_interval, 100)
     recent_train_losses = deque(maxlen=log_interval)
@@ -260,10 +368,28 @@ def train(model, train_dataloader, val_dataloader, optimizer, loss_fn, epochs, c
                  set_optimizer_lr(optimizer, target_lr)
                  current_lr = target_lr
 
+            label_hints_to_pass = None
+            pos_size_hints_to_pass = None
+
+            # Decide whether to use hints for this iteration based on p_hint
+            # random.random() > p_hint means we USE the hint
+            if random.random() > p_hint:
+                # Extract hints from the raw targets list.
+                # Your raw_targets_list is perfect for this.
+                label_hints_to_pass = [t['labels'] for t in raw_targets_list]
+                # Assuming your boxes are already in [cx, cy, w, h] format
+                pos_size_hints_to_pass = [t['boxes'] for t in raw_targets_list]
+
             loss, box_loss, cls_loss, obj_loss = train_step(
-                images, formatted_targets, optimizer, model, loss_fn, scaler, device
+                images, formatted_targets, optimizer, model, loss_fn, scaler, device,
+                label_hints=label_hints_to_pass,
+                pos_size_hints=pos_size_hints_to_pass
             )
             total_batches_trained += 1
+            # loss, box_loss, cls_loss, obj_loss = train_step(
+            #     images, formatted_targets, optimizer, model, loss_fn, scaler, device
+            # )
+            # total_batches_trained += 1
             
             loss_item = loss.item(); box_loss_item = box_loss.item(); cls_loss_item = cls_loss.item(); obj_loss_item = obj_loss.item()
             recent_train_losses.append(loss_item)
@@ -300,6 +426,12 @@ def train(model, train_dataloader, val_dataloader, optimizer, loss_fn, epochs, c
                      batch_idx=batch_idx, save_folder=latest_train_vis_folder
                  )
 
+        if epoch < weaning_epochs:
+            p_hint = (epoch + 1) / weaning_epochs
+        else:
+            # After weaning_epochs, hints are permanently disabled
+            p_hint = 1.0
+            
         if total_batches_trained > warmup_batches:    
             scheduler.step()
 
