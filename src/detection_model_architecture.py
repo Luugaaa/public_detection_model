@@ -2,10 +2,9 @@ import torch
 import torch.nn as nn
 import math
 from collections import OrderedDict
-from typing import List, Optional, Tuple
 
 # ==============================================================================
-# Helper Modules (DropPath, ConvBNAct, SeparableConvBlock)
+# Helper Modules (DropPath, ConvBNAct, SeparableConvBlock
 # ==============================================================================
 class DropPath(nn.Module):
     def __init__(self, drop_prob=None):
@@ -48,36 +47,31 @@ class SeparableConvBlock(nn.Module):
         return x
 
 # ==============================================================================
-# << NEW: Hint Processing Module >>
-# This module converts raw hints into a feature vector.
+# C2f Block (New)
 # ==============================================================================
-class HintProcessor(nn.Module):
-    def __init__(self, num_classes: int, embedding_dim: int):
+class C2f(nn.Module):
+    def __init__(self, c1, c2, n=1, shortcut=False, g=1, e=0.5):
         super().__init__()
-        self.embedding_dim = embedding_dim
-        single_hint_dim = embedding_dim // 2
-        if embedding_dim % 2 != 0:
-            raise ValueError("hint_embedding_dim must be divisible by 2.")
+        self.c = int(c2 * e)  # hidden channels
+        self.cv1 = ConvBNAct(c1, 2 * self.c, kernel_size=1)
+        self.cv2 = ConvBNAct((2 + n) * self.c, c2, kernel_size=1)
+        self.m = nn.ModuleList(BottleNeck(self.c, self.c, shortcut, g, e=1.0) for _ in range(n))
 
-        self.label_embedder = nn.Embedding(num_classes, single_hint_dim)
-        self.pos_size_mlp = nn.Sequential(
-            nn.Linear(4, single_hint_dim * 2), nn.ReLU(),
-            nn.Linear(single_hint_dim * 2, single_hint_dim)
-        )
-        print(f"HintProcessor: Initialized for single-object processing. Output dim={embedding_dim}")
+    def forward(self, x):
+        y = list(self.cv1(x).split((self.c, self.c), 1))
+        y.extend(m(y[-1]) for m in self.m)
+        return self.cv2(torch.cat(y, 1))
 
-    def forward(self, labels: torch.Tensor, boxes: torch.Tensor) -> torch.Tensor:
-        """
-        Processes hints for a batch of individual objects.
-        - labels: Tensor of shape [num_objects, 1]
-        - boxes: Tensor of shape [num_objects, 4] (cx, cy, w, h)
-        """
-        label_emb = self.label_embedder(labels.long().squeeze(-1))
-        pos_size_emb = self.pos_size_mlp(boxes)
-        # Returns a tensor of shape [num_objects, embedding_dim]
-        return torch.cat([label_emb, pos_size_emb], dim=1)
+class BottleNeck(nn.Module):
+    def __init__(self, c1, c2, shortcut=True, g=1, e=0.5):
+        super().__init__()
+        c_ = int(c2 * e)  # hidden channels
+        self.cv1 = ConvBNAct(c1, c_, kernel_size=1)
+        self.cv2 = ConvBNAct(c_, c2, kernel_size=3, groups=g)
+        self.add = shortcut and c1 == c2
 
-
+    def forward(self, x):
+        return x + self.cv2(self.cv1(x)) if self.add else self.cv2(self.cv1(x))
 
 # ==============================================================================
 # ELAN-inspired Block
@@ -118,14 +112,15 @@ class CSP_ELAN_Block(nn.Module):
         self.branch1_conv = ConvBNAct(out_channels, mid_channels, kernel_size=1)
         self.branch2_conv = ConvBNAct(out_channels, mid_channels, kernel_size=1)
 
+        # Adjusted ELANBlock's internal mid_channels for potentially richer features
         self.elan_block = ELANBlock(
-            mid_channels, mid_channels, mid_channels,
+            mid_channels, mid_channels, mid_channels, # Changed: mid_channels for internal processing
             num_blocks=num_elan_internal_blocks,
             use_separable_conv=use_separable_conv,
             dropout_rate=dropout_rate
         )
         self.fusion_conv = ConvBNAct(mid_channels * 2, out_channels, kernel_size=1)
-        self.dropout = nn.Dropout2d(dropout_rate) if dropout_rate > 0 else nn.Identity()
+        self.dropout = nn.Dropout2d(dropout_rate) if dropout_rate > 0 else nn.Identity() # Redundant if ELAN has it? Applied after fusion.
 
     def forward(self, x):
         x = self.downsample(x)
@@ -150,20 +145,31 @@ class SPPF(nn.Module):
 
     def forward(self, x):
         x = self.cv1(x)
+        # AMP autocast disable for MaxPool is good if precision issues are seen
+        # with torch.amp.autocast(enabled=False): # Original had device_type='cuda'
+        #     x_float = x.float() # Ensure float for maxpool
+        #     y1 = self.m(x_float)
+        #     y2 = self.m(y1)
+        #     y3 = self.m(y2)
+        # return self.cv2(torch.cat([x_float, y1, y2, y3], 1))
+        # Simpler if autocast is generally stable
         y1 = self.m(x)
         y2 = self.m(y1)
         return self.cv2(torch.cat((x, y1, y2, self.m(y2)), 1))
+
 
 # ==============================================================================
 # Backbone
 # ==============================================================================
 class EnhancedBackbone(nn.Module):
-    def __init__(self, base_channels=64, num_csp_elan_blocks=[3,3,3,3],
-                 feat_channels_proj=256,
+    def __init__(self, base_channels=64, num_csp_elan_blocks=[3,3,3,3], # Increased from [2,2,2,2]
+                 feat_channels_proj=256, # Projection channels for neck
                  use_separable_conv_backbone=True,
-                 dropout_rate=0.0,
+                 dropout_rate=0.0, # Reduced default dropout in backbone stages
                  drop_path_rate=0.0):
         super().__init__()
+        print(f"Backbone: SeparableConvs: {use_separable_conv_backbone}, Dropout: {dropout_rate}, DropPath: {drop_path_rate}, ProjChannels: {feat_channels_proj}")
+
         self.stem = nn.Sequential(
              ConvBNAct(3, base_channels // 2, kernel_size=3, stride=2),
              ConvBNAct(base_channels // 2, base_channels, kernel_size=3, stride=1),
@@ -171,38 +177,42 @@ class EnhancedBackbone(nn.Module):
         )
 
         c1_channels = base_channels
-        c2_channels = base_channels * 2
-        c3_channels = base_channels * 4
-        c4_channels = base_channels * 8
-        c5_channels = base_channels * 16
+        c2_channels = base_channels * 2  # Output of first stage will be this
+        c3_channels = base_channels * 4  # Output of second stage will be this (P3 level)
+        c4_channels = base_channels * 8  # Output of third stage will be this (P4 level)
+        c5_channels = base_channels * 16 # Output of fourth stage will be this (P5 level)
 
-        self.csp_elan1 = CSP_ELAN_Block(c1_channels, c2_channels, num_elan_internal_blocks=num_csp_elan_blocks[0], use_separable_conv=use_separable_conv_backbone, dropout_rate=dropout_rate)
-        self.csp_elan2 = CSP_ELAN_Block(c2_channels, c3_channels, num_elan_internal_blocks=num_csp_elan_blocks[1], use_separable_conv=use_separable_conv_backbone, dropout_rate=dropout_rate)
-        self.csp_elan3 = CSP_ELAN_Block(c3_channels, c4_channels, num_elan_internal_blocks=num_csp_elan_blocks[2], use_separable_conv=use_separable_conv_backbone, dropout_rate=dropout_rate)
-        self.csp_elan4 = CSP_ELAN_Block(c4_channels, c5_channels, num_elan_internal_blocks=num_csp_elan_blocks[3], use_separable_conv=use_separable_conv_backbone, dropout_rate=dropout_rate)
+        # Backbone stages
+        self.stage1 = CSP_ELAN_Block(c1_channels, c2_channels, num_elan_internal_blocks=num_csp_elan_blocks[0], use_separable_conv=use_separable_conv_backbone, dropout_rate=dropout_rate)
+        self.stage2 = CSP_ELAN_Block(c2_channels, c3_channels, num_elan_internal_blocks=num_csp_elan_blocks[1], use_separable_conv=use_separable_conv_backbone, dropout_rate=dropout_rate) # P3
+        self.stage3 = C2f(c3_channels, c4_channels, n=num_csp_elan_blocks[2], shortcut=True) # P4 - Using C2f here
+        self.stage4 = C2f(c4_channels, c5_channels, n=num_csp_elan_blocks[3], shortcut=True) # P5 - Using C2f here
         self.sppf = SPPF(c5_channels, c5_channels)
 
+        # Projections to neck feature dimension
         self.proj_p3 = ConvBNAct(c3_channels, feat_channels_proj, kernel_size=1)
         self.proj_p4 = ConvBNAct(c4_channels, feat_channels_proj, kernel_size=1)
-        self.proj_p5 = ConvBNAct(c5_channels, feat_channels_proj, kernel_size=1)
+        self.proj_p5 = ConvBNAct(c5_channels, feat_channels_proj, kernel_size=1) # After SPPF
 
     def forward(self, x):
         x = self.stem(x)
-        x = self.csp_elan1(x)
-        p3_feat = self.csp_elan2(x)
-        p4_feat = self.csp_elan3(p3_feat)
-        p5_feat = self.csp_elan4(p4_feat)
+        x = self.stage1(x)
+        p3_feat = self.stage2(x)
+        p4_feat = self.stage3(p3_feat)
+        p5_feat = self.stage4(p4_feat)
         p5_sppf = self.sppf(p5_feat)
+
+        # Project features for the neck
         p3 = self.proj_p3(p3_feat)
         p4 = self.proj_p4(p4_feat)
         p5 = self.proj_p5(p5_sppf)
+
         features = OrderedDict([('p3', p3), ('p4', p4), ('p5', p5)])
         return features
 
 # ==============================================================================
 # BiFPN Neck
 # ==============================================================================
-# ResidualBlock and WeightedFeatureFusion are unchanged
 class ResidualBlock(nn.Module):
     def __init__(self, channels, use_separable_conv=True, drop_path_rate=0.0):
         super().__init__()
@@ -242,35 +252,61 @@ class EnhancedBiFPNBlock(nn.Module):
     def __init__(self, feat_channels, num_levels=3, use_separable_conv_neck=True, epsilon=1e-4, dropout_rate=0.0, drop_path_rate=0.0):
         super().__init__()
         self.feat_channels = feat_channels
-        self.num_levels = num_levels
+        self.num_levels = num_levels # P3, P4, P5
+        Conv = SeparableConvBlock if use_separable_conv_neck else ConvBNAct #?
+
+        # Top-down path processing and fusion
         self.td_process = nn.ModuleList([ResidualBlock(feat_channels, use_separable_conv_neck, drop_path_rate) for _ in range(num_levels -1)])
-        self.td_fusion = nn.ModuleList([WeightedFeatureFusion(2, feat_channels, epsilon) for _ in range(num_levels - 1)])
+        self.td_fusion = nn.ModuleList([WeightedFeatureFusion(2, feat_channels, epsilon) for _ in range(num_levels - 1)]) # P4_td, P3_td
+
+        # Bottom-up path processing and fusion
         self.bu_process = nn.ModuleList([ResidualBlock(feat_channels, use_separable_conv_neck, drop_path_rate) for _ in range(num_levels -1)])
-        self.bu_fusion = nn.ModuleList([WeightedFeatureFusion(3, feat_channels, epsilon) for _ in range(num_levels - 1)])
+        self.bu_fusion = nn.ModuleList([WeightedFeatureFusion(3, feat_channels, epsilon) for _ in range(num_levels - 1)]) # P4_out, P5_out
+
         self.upsample = nn.Upsample(scale_factor=2, mode='nearest')
-        self.downsample_ops = nn.ModuleList([ConvBNAct(feat_channels, feat_channels, kernel_size=3, stride=2) for _ in range(num_levels - 1)])
+        # For downsampling in bottom-up path (P3_out -> P4_in_bu, P4_out -> P5_in_bu)
+
+        self.downsample_ops = nn.ModuleList()
+        for _ in range(num_levels - 1): # P3->P4, P4->P5
+            self.downsample_ops.append(
+                ConvBNAct(feat_channels, feat_channels, kernel_size=3, stride=2)
+            )
+
         self.dropout = nn.Dropout2d(dropout_rate) if dropout_rate > 0 else nn.Identity()
 
     def forward(self, features):
-        p_in = list(features)
+        p_in = list(features) # P3, P4, P5 from backbone
         assert len(p_in) == self.num_levels
+
+        # Top-Down Path
         p_td = [None] * self.num_levels
-        p_td[self.num_levels-1] = p_in[self.num_levels-1]
+        p_td[self.num_levels-1] = p_in[self.num_levels-1] # P5_td = P5_in (highest level)
+
+        # P4_td = Fusion(P4_in, Upsample(P5_td))
+        # P3_td = Fusion(P3_in, Upsample(P4_td))
         for i in range(self.num_levels - 2, -1, -1):
             fused_node = self.td_fusion[i]([p_in[i], self.upsample(p_td[i+1])])
             p_td[i] = self.td_process[i](fused_node)
+
+        # Bottom-Up Path
         p_out = [None] * self.num_levels
-        p_out[0] = p_td[0]
-        for i in range(self.num_levels - 1):
+        p_out[0] = p_td[0] # P3_out = P3_td (lowest level)
+
+        # P4_out = Fusion(P4_in, P4_td, Downsample(P3_out))
+        # P5_out = Fusion(P5_in, P5_td, Downsample(P4_out))
+        for i in range(self.num_levels - 1): # i=0 for P4_out, i=1 for P5_out
             fused_node = self.bu_fusion[i]([ p_in[i+1], p_td[i+1], self.downsample_ops[i](p_out[i]) ])
             p_out[i+1] = self.bu_process[i](fused_node)
         return p_out
 
+
 class EnhancedBiFPNNeck(nn.Module):
-    def __init__(self, feat_channels=256, num_bifpn_blocks=3, num_levels=3,
+    def __init__(self, feat_channels=256, num_bifpn_blocks=3, num_levels=3, # P3,P4,P5
                  use_separable_conv_neck=True, dropout_rate=0.0, drop_path_rate=0.0):
         super().__init__()
         self.num_bifpn_blocks = num_bifpn_blocks
+        print(f"Neck: FeatChannels: {feat_channels}, BiFPNBlocks: {num_bifpn_blocks}, SeparableConvs: {use_separable_conv_neck}, Dropout: {dropout_rate}, DropPath: {drop_path_rate}")
+
         self.bifpn_blocks = nn.ModuleList([
             EnhancedBiFPNBlock(feat_channels, num_levels, use_separable_conv_neck,
                               dropout_rate=dropout_rate, drop_path_rate=drop_path_rate)
@@ -278,38 +314,47 @@ class EnhancedBiFPNNeck(nn.Module):
         ])
 
     def forward(self, backbone_features):
+        # backbone_features is an OrderedDict: {'p3': tensor, 'p4': tensor, 'p5': tensor}
         keys = [f'p{i+3}' for i in range(self.bifpn_blocks[0].num_levels)]
         features = [backbone_features[k] for k in keys]
+
         for block in self.bifpn_blocks:
             features = block(features)
-        return features
+        return features # List of [P3_out, P4_out, P5_out]
 
 # ==============================================================================
 # Detection Head (Updated for DFL)
 # ==============================================================================
 class DetectionHead(nn.Module):
-    def __init__(self, num_classes=80, max_objects_per_pixel=1, reg_max=16,
+    def __init__(self, num_classes=80, max_objects_per_pixel=1, reg_max=16, # For DFL
                  in_channels=256, mid_channels=256,
                  use_separable_conv_head=True, head_depth=3, dropout_rate=0.1):
         super().__init__()
         self.num_classes = num_classes
-        self.max_objects_per_pixel = max_objects_per_pixel
-        self.reg_max = reg_max
+        self.max_objects_per_pixel = max_objects_per_pixel # K
+        self.reg_max = reg_max # Number of bins for DFL (0 to reg_max-1)
+        print(f"Head: Classes: {num_classes}, K: {max_objects_per_pixel}, RegMax: {reg_max}, InChannels: {in_channels}, MidChannels: {mid_channels}, Depth: {head_depth}, Separable: {use_separable_conv_head}, Dropout: {dropout_rate}")
+
         ConvBlock = SeparableConvBlock if use_separable_conv_head else ConvBNAct
+
         self.stem = ConvBNAct(in_channels, mid_channels, kernel_size=1)
+
         cls_layers = []
         for _ in range(head_depth):
             cls_layers.append(ConvBlock(mid_channels, mid_channels, kernel_size=3))
             if dropout_rate > 0: cls_layers.append(nn.Dropout2d(dropout_rate))
         self.cls_convs = nn.Sequential(*cls_layers)
         self.cls_pred = nn.Conv2d(mid_channels, num_classes * max_objects_per_pixel, 1)
+
         reg_layers = []
         for _ in range(head_depth):
             reg_layers.append(ConvBlock(mid_channels, mid_channels, kernel_size=3))
             if dropout_rate > 0: reg_layers.append(nn.Dropout2d(dropout_rate))
         self.reg_convs = nn.Sequential(*reg_layers)
+        # For DFL, regression head predicts 4 * reg_max values (for l,t,r,b distributions)
         self.reg_pred = nn.Conv2d(mid_channels, 4 * self.reg_max * max_objects_per_pixel, 1)
         self.obj_pred = nn.Conv2d(mid_channels, max_objects_per_pixel, 1)
+
         self._initialize_biases()
 
     def _initialize_biases(self):
@@ -323,58 +368,63 @@ class DetectionHead(nn.Module):
     def forward(self, x):
         B, _, H, W = x.shape
         stem_features = self.stem(x)
+
         cls_feat = self.cls_convs(stem_features)
         cls_pred_raw = self.cls_pred(cls_feat)
+
         reg_feat = self.reg_convs(stem_features)
-        box_pred_raw = self.reg_pred(reg_feat)
+        box_pred_raw = self.reg_pred(reg_feat) # (B, K * 4 * reg_max, H, W)
         obj_pred_raw = self.obj_pred(reg_feat)
+
+        # --- Reshape outputs ---
+        # Box: (B, N_scale, 4 * reg_max) - these are logits for DFL
         box_pred_reshaped = box_pred_raw.view(B, self.max_objects_per_pixel, 4 * self.reg_max, H, W)
-        box_pred_final = box_pred_reshaped.permute(0, 3, 4, 1, 2).contiguous().view(B, -1, 4 * self.reg_max)
+        box_pred_final = box_pred_reshaped.permute(0, 3, 4, 1, 2).contiguous().view(B, -1, 4 * self.reg_max) # ?
+
+        # Class: (B, N_scale, C)
         cls_pred_reshaped = cls_pred_raw.view(B, self.max_objects_per_pixel, self.num_classes, H, W)
         cls_pred_final = cls_pred_reshaped.permute(0, 3, 4, 1, 2).contiguous().view(B, -1, self.num_classes)
+
+        # Objectness: (B, N_scale, 1)
         obj_pred_reshaped = obj_pred_raw.view(B, self.max_objects_per_pixel, 1, H, W)
         obj_pred_final = obj_pred_reshaped.permute(0, 3, 4, 1, 2).contiguous().view(B, -1, 1)
+
         return {"boxes_dfl": box_pred_final, "classes": cls_pred_final, "objectness": obj_pred_final}
 
 # ==============================================================================
-# << MODIFIED: Complete Detector Model >>
-# Renamed and adapted for progressive learning.
+# Complete Detector Model
 # ==============================================================================
-class DetectionModel(nn.Module): # << MODIFIED: Renamed class
+class DetectionModel(nn.Module):
     def __init__(self,
                  num_classes=80,
-                 max_objects_per_pixel=1,
-                 reg_max=16,
+                 max_objects_per_pixel=1, # K value
+                 reg_max=16, # For DFL
                  backbone_base_channels=78,
                  backbone_num_csp_elan_blocks=[3,3,3,3],
-                 fpn_feat_channels=128,
-                 num_bifpn_blocks=4,
-                 head_mid_channels=128,
+                 fpn_feat_channels=128,    # Increased
+                 num_bifpn_blocks=4,       # Increased from 3
+                 head_mid_channels=128,    # Increased
                  head_depth=4,
                  use_separable_conv_backbone=True,
                  use_separable_conv_neck=True,
                  use_separable_conv_head=True,
-                 dropout_rate=0.1,
-                 drop_path_rate=0.07,
-                 hint_embedding_dim: int = 128): # << NEW: Hint dimension parameter
+                 dropout_rate=0.1,         # Slightly reduced general dropout
+                 drop_path_rate=0.07):      # Slightly reduced general droppath
         super().__init__()
         self.num_classes = num_classes
         self.max_objects_per_pixel = max_objects_per_pixel
         self.reg_max = reg_max
-        self.strides = [8, 16, 32]
-        self.hint_embedding_dim = hint_embedding_dim # << NEW
+        self.strides = [8, 16, 32] # Corresponds to P3, P4, P5 outputs
 
-        print(f"--- Creating ProgressiveDetectionModel (DFL Ready) ---")
-        # << NEW: Instantiate hint processor if hints are enabled
-        if self.hint_embedding_dim > 0:
-            self.hint_processor = HintProcessor(num_classes, hint_embedding_dim)
-        else:
-            self.hint_processor = None
+        print(f"--- Creating DetectionModel (DFL Ready) ---")
+        print(f"Classes: {num_classes}, K: {max_objects_per_pixel}, RegMax: {reg_max}")
+        print(f"FPN Channels: {fpn_feat_channels}, BiFPN Blocks: {num_bifpn_blocks}")
+        print(f"Overall Dropout: {dropout_rate}, DropPath: {drop_path_rate}")
 
         self.backbone = EnhancedBackbone(
             base_channels=backbone_base_channels,
             num_csp_elan_blocks=backbone_num_csp_elan_blocks,
-            feat_channels_proj=fpn_feat_channels,
+            feat_channels_proj=fpn_feat_channels, # Backbone projects to FPN channels
             use_separable_conv_backbone=use_separable_conv_backbone,
             dropout_rate=dropout_rate,
             drop_path_rate=drop_path_rate
@@ -383,85 +433,30 @@ class DetectionModel(nn.Module): # << MODIFIED: Renamed class
         self.neck = EnhancedBiFPNNeck(
             feat_channels=fpn_feat_channels,
             num_bifpn_blocks=num_bifpn_blocks,
-            num_levels=3,
+            num_levels=3, # P3, P4, P5
             use_separable_conv_neck=use_separable_conv_neck,
             dropout_rate=dropout_rate,
             drop_path_rate=drop_path_rate
         )
 
+        # One head instance per FPN level
         self.heads = nn.ModuleList()
-        # << MODIFIED: Update head input channels to include hint dimension
-        head_in_channels = fpn_feat_channels
-        if self.hint_processor is not None:
-            head_in_channels += self.hint_embedding_dim
-            print(f"Heads will receive fused features: FPN({fpn_feat_channels}) + Hints({self.hint_embedding_dim}) = {head_in_channels} channels")
-
-        for _ in self.strides:
+        for _ in self.strides: # Create a head for each stride/FPN level
             self.heads.append(DetectionHead(
                 num_classes=num_classes, max_objects_per_pixel=max_objects_per_pixel,
                 reg_max=reg_max,
-                in_channels=head_in_channels, # << MODIFIED
-                mid_channels=head_mid_channels,
+                in_channels=fpn_feat_channels, mid_channels=head_mid_channels,
                 use_separable_conv_head=use_separable_conv_head, head_depth=head_depth,
                 dropout_rate=dropout_rate
             ))
         print(f"--- Model Creation Complete ---")
 
-    # << MODIFIED: forward signature to accept optional hints >>
-    def forward(self, x: torch.Tensor,
-                label_hints: Optional[List[torch.Tensor]] = None,
-                pos_size_hints: Optional[List[torch.Tensor]] = None) -> dict:
-
-        features = self.backbone(x)
-        fpn_features = self.neck(features) # List [P3_out, P4_out, P5_out]
-
-        # --- << NEW: Spatially-Aware Hint Fusion Logic >> ---
-        fused_fpn_features = []
-        # Check if we are in hint mode
-        use_hints = self.hint_processor is not None and label_hints is not None and pos_size_hints is not None
-
-        for i, feature_map in enumerate(fpn_features):
-            B, C, H, W = feature_map.shape
-            
-            # If not using hints, create zero hints to maintain channel dimension for the heads
-            if not use_hints:
-                if self.hint_processor is not None:
-                    zero_hints = torch.zeros(B, self.hint_embedding_dim, H, W, device=x.device, dtype=x.dtype)
-                    fused_map = torch.cat([feature_map, zero_hints], dim=1)
-                    fused_fpn_features.append(fused_map)
-                else:
-                    fused_fpn_features.append(feature_map) # No hints were ever defined
-                continue
-
-            # --- Create and Stamp the Hint Map for this FPN Level ---
-            stride = self.strides[i]
-            hint_map = torch.zeros(B, self.hint_embedding_dim, H, W, device=x.device, dtype=x.dtype)
-
-            # Process all objects for this batch at once
-            batch_indices = torch.cat([torch.full_like(t, b_idx) for b_idx, t in enumerate(label_hints)])
-            all_labels = torch.cat(label_hints, dim=0).unsqueeze(-1)
-            all_boxes = torch.cat(pos_size_hints, dim=0)
-
-            # Generate hint embeddings for all objects in the batch
-            # Shape: [total_num_objects, hint_embedding_dim]
-            all_hint_embeddings = self.hint_processor(all_labels.to(x.device), all_boxes.to(x.device))
-
-            # Calculate grid coordinates for all objects
-            # boxes are (cx, cy, w, h) normalized to image size (0-1)
-            # Scale to feature map grid
-            grid_x = (all_boxes[:, 0] * W).long().clamp(0, W - 1)
-            grid_y = (all_boxes[:, 1] * H).long().clamp(0, H - 1)
-            
-            # "Stamp" the hints on the map using advanced indexing
-            # This is a highly efficient way to update multiple locations at once
-            hint_map[batch_indices, :, grid_y, grid_x] = all_hint_embeddings
-
-            fused_map = torch.cat([feature_map, hint_map], dim=1)
-            fused_fpn_features.append(fused_map)
-        # --- End of Hint Fusion Logic ---
+    def forward(self, x):
+        backbone_features = self.backbone(x) # OrderedDict {'p3':T, 'p4':T, 'p5':T}
+        fpn_features = self.neck(backbone_features) # List [P3_out, P4_out, P5_out]
 
         outputs_per_scale = []
-        for head, feature_map in zip(self.heads, fused_fpn_features):
+        for head, feature_map in zip(self.heads, fpn_features):
             outputs_per_scale.append(head(feature_map))
 
         combined_outputs = {}
@@ -469,7 +464,9 @@ class DetectionModel(nn.Module): # << MODIFIED: Renamed class
         for key in keys:
             tensors_to_concat = [out_scale[key] for out_scale in outputs_per_scale]
             combined_outputs[key] = torch.cat(tensors_to_concat, dim=1)
-            
+        # combined_outputs['boxes_dfl'] will be (B, N_total, 4 * reg_max)
+        # combined_outputs['classes'] will be (B, N_total, C)
+        # combined_outputs['objectness'] will be (B, N_total, 1)
         return combined_outputs
 
 # import torch

@@ -92,9 +92,7 @@ def get_val_transform(target_size=640):
     ], bbox_params=A.BboxParams(format='yolo', label_fields=['class_labels']))
 
 # Initialize components
-HINT_DIM = 128
-
-model = DetectionModel(num_classes=len(CLASS_NAMES), hint_embedding_dim=HINT_DIM).to(device)
+model = DetectionModel(num_classes=len(CLASS_NAMES)).to(device)
 # model = load_model("train/train_128/best.pt", modeltype=DetectionModel, device=device).to(device)
 # model = load_model("/kaggle/input/mid-dataset/best-4.pt", modeltype=DetectionModel, device=device).to(device)
 
@@ -275,4 +273,4 @@ val_loader = DataLoader(
 epochs=300
 train(model, train_loader, val_dataloader=val_loader, optimizer=optimizer, loss_fn=loss_fn, 
         class_names=CLASS_NAMES, device=device, epochs=epochs,
-        initial_lr=LEARNING_RATE, weaning_epochs=50)
+        initial_lr=LEARNING_RATE)
