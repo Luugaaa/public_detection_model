@@ -17,6 +17,15 @@ from evaluator import evaluate_model
 from src.detection_model_architecture import DetectionModel
 
 
+def set_module_trainable(module, trainable=True):
+    """
+    Sets the `requires_grad` attribute for all parameters of a given module.
+    """
+    print(f"Setting module {type(module).__name__} trainable: {trainable}")
+    for param in module.parameters():
+        param.requires_grad = trainable
+
+
 def set_optimizer_lr(optimizer, new_lr):
     """Sets the learning rate for all parameter groups in the optimizer."""
     for param_group in optimizer.param_groups:
@@ -249,7 +258,7 @@ def train(model, train_dataloader, val_dataloader, optimizer, loss_fn, epochs, c
           vis_interval=200, val_epochs=10, epoch_vis_interval=10,
           warmup_epochs=3, initial_lr=3e-4, scheduler_T_max=None, scheduler_eta_min=1e-6,
           no_mosaic_epochs=200, reenable_mosaic_epoch=100, reno_mosaic_epoch=50,
-          weaning_epochs=50): 
+          freeze_epochs=20, weaning_epochs=50): 
 
     model.to(device)
     if isinstance(loss_fn, torch.nn.Module):
@@ -307,7 +316,9 @@ def train(model, train_dataloader, val_dataloader, optimizer, loss_fn, epochs, c
         ])
 
     p_hint = 0.0
-    print(f"Progressive Learning Enabled: Hints will be phased out over {weaning_epochs} epochs.")
+    print(f"Progressive Learning Enabled:")
+    print(f"  Phase 1: Backbone/Neck frozen for the first {freeze_epochs} epochs.")
+    print(f"  Phase 2: Hints will be phased out over the following {weaning_epochs} epochs.")
 
 
     log_interval = min(vis_interval, 100)
@@ -319,6 +330,20 @@ def train(model, train_dataloader, val_dataloader, optimizer, loss_fn, epochs, c
 
     print(f"Starting training for {epochs} epochs...")
     for epoch in range(1, epochs + 1):
+        if epoch == 1 and freeze_epochs > 0:
+            print("\n--- Entering Phase 1: Freezing Backbone and Neck ---")
+            set_module_trainable(model.backbone, False)
+            set_module_trainable(model.neck, False)
+            # Ensure heads and hint processor are trainable
+            set_module_trainable(model.heads, True)
+            if hasattr(model, 'hint_processor') and model.hint_processor is not None:
+                set_module_trainable(model.hint_processor, True)
+
+        if epoch == freeze_epochs + 1:
+            print("\n--- Entering Phase 2: Unfreezing all layers & starting hint weaning ---")
+            set_module_trainable(model.backbone, True)
+            set_module_trainable(model.neck, True)
+
         model.train()
         epoch_stats['train'] = {'total': 0.0, 'box': 0.0, 'cls': 0.0, 'obj': 0.0, 'count': 0}
 
@@ -426,12 +451,17 @@ def train(model, train_dataloader, val_dataloader, optimizer, loss_fn, epochs, c
                      batch_idx=batch_idx, save_folder=latest_train_vis_folder
                  )
 
-        if epoch < weaning_epochs:
-            p_hint = (epoch + 1) / weaning_epochs
+        if epoch <= freeze_epochs:
+            # During the frozen phase, always supply hints
+            p_hint = 0.0
+        elif epoch > freeze_epochs and epoch <= freeze_epochs + weaning_epochs:
+            # During the weaning phase, linearly increase the dropout probability
+            current_weaning_epoch = epoch - freeze_epochs
+            p_hint = current_weaning_epoch / weaning_epochs
         else:
-            # After weaning_epochs, hints are permanently disabled
+            # After weaning, hints are permanently off
             p_hint = 1.0
-            
+
         if total_batches_trained > warmup_batches:    
             scheduler.step()
 
