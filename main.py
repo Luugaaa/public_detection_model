@@ -94,7 +94,7 @@ def get_val_transform(target_size=640):
 # Initialize components
 # model = DetectionModel(num_classes=len(CLASS_NAMES)).to(device)
 # model = load_model("train/train_128/best.pt", modeltype=DetectionModel, device=device).to(device)
-model = load_model("/kaggle/input/mid_updated_model_140625/best-5.pt", modeltype=DetectionModel, device=device).to(device)
+model = load_model("/kaggle/input/mid-updated-model-140625/best-5.pt", modeltype=DetectionModel, device=device).to(device)
 
 
 LEARNING_RATE=1e-4
