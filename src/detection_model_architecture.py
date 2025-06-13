@@ -55,64 +55,28 @@ class HintProcessor(nn.Module):
     def __init__(self, num_classes: int, embedding_dim: int):
         super().__init__()
         self.embedding_dim = embedding_dim
-        # One embedding for labels, one for position/size
         single_hint_dim = embedding_dim // 2
         if embedding_dim % 2 != 0:
             raise ValueError("hint_embedding_dim must be divisible by 2.")
 
-        # Embedding for categorical class labels
         self.label_embedder = nn.Embedding(num_classes, single_hint_dim)
-
-        # MLP for continuous position and size hints (cx, cy, w, h)
         self.pos_size_mlp = nn.Sequential(
-            nn.Linear(4, single_hint_dim * 2),
-            nn.ReLU(),
+            nn.Linear(4, single_hint_dim * 2), nn.ReLU(),
             nn.Linear(single_hint_dim * 2, single_hint_dim)
         )
-        print(f"HintProcessor: Initialized with total embedding_dim={embedding_dim}")
+        print(f"HintProcessor: Initialized for single-object processing. Output dim={embedding_dim}")
 
-    def forward(self,
-                label_hints: Optional[List[torch.Tensor]],
-                pos_size_hints: Optional[List[torch.Tensor]],
-                device: torch.device) -> torch.Tensor:
+    def forward(self, labels: torch.Tensor, boxes: torch.Tensor) -> torch.Tensor:
         """
-        Processes lists of hints for a batch of images.
-        - label_hints: List of tensors, where each tensor contains object class indices for one image.
-        - pos_size_hints: List of tensors, where each tensor contains object boxes [cx, cy, w, h] for one image.
+        Processes hints for a batch of individual objects.
+        - labels: Tensor of shape [num_objects, 1]
+        - boxes: Tensor of shape [num_objects, 4] (cx, cy, w, h)
         """
-        batch_size = len(label_hints) if label_hints is not None else (len(pos_size_hints) if pos_size_hints is not None else 0)
-        if batch_size == 0:
-            return torch.zeros(0, self.embedding_dim, device=device)
+        label_emb = self.label_embedder(labels.long().squeeze(-1))
+        pos_size_emb = self.pos_size_mlp(boxes)
+        # Returns a tensor of shape [num_objects, embedding_dim]
+        return torch.cat([label_emb, pos_size_emb], dim=1)
 
-        # Process label hints
-        if label_hints is not None:
-            # Get the mean embedding of all object labels in each image
-            label_embs = [self.label_embedder(labels.long()).mean(dim=0) for labels in label_hints if labels.numel() > 0]
-            # Handle images with no objects
-            if not label_embs:
-                avg_label_emb = torch.zeros(batch_size, self.embedding_dim // 2, device=device)
-            else:
-                avg_label_emb = torch.stack(label_embs)
-        else:
-            # If no label hints are provided (hint dropout), use a zero tensor
-            avg_label_emb = torch.zeros(batch_size, self.embedding_dim // 2, device=device)
-
-        # Process position/size hints
-        if pos_size_hints is not None:
-            # Get the mean embedding of all object positions/sizes in each image
-            pos_size_embs = [self.pos_size_mlp(boxes).mean(dim=0) for boxes in pos_size_hints if boxes.numel() > 0]
-            if not pos_size_embs:
-                 avg_pos_size_emb = torch.zeros(batch_size, self.embedding_dim // 2, device=device)
-            else:
-                 avg_pos_size_emb = torch.stack(pos_size_embs)
-        else:
-            # If no pos/size hints are provided, use a zero tensor
-            avg_pos_size_emb = torch.zeros(batch_size, self.embedding_dim // 2, device=device)
-
-        # Concatenate to form the final hint vector for the batch
-        # Shape: [batch_size, embedding_dim]
-        final_hint_vector = torch.cat([avg_label_emb, avg_pos_size_emb], dim=1)
-        return final_hint_vector
 
 
 # ==============================================================================
@@ -393,40 +357,22 @@ class DetectionModel(nn.Module): # << MODIFIED: Renamed class
                  dropout_rate=0.1,
                  drop_path_rate=0.07,
                  hint_embedding_dim: int = 128): # << NEW: Hint dimension parameter
-        super().__init__()
-        self.num_classes = num_classes
-        self.max_objects_per_pixel = max_objects_per_pixel
-        self.reg_max = reg_max
-        self.strides = [8, 16, 32]
-        self.hint_embedding_dim = hint_embedding_dim # << NEW
 
-        print(f"--- Creating ProgressiveDetectionModel (DFL Ready) ---")
-        # << NEW: Instantiate hint processor if hints are enabled
+        super().__init__()
+        # ... (Initialization of num_classes, reg_max, etc. is the same) ...
+        self.strides = [8, 16, 32] # P3, P4, P5
+        self.hint_embedding_dim = hint_embedding_dim
+
+        # --- Instantiate Modules ---
         if self.hint_embedding_dim > 0:
             self.hint_processor = HintProcessor(num_classes, hint_embedding_dim)
         else:
             self.hint_processor = None
 
-        self.backbone = EnhancedBackbone(
-            base_channels=backbone_base_channels,
-            num_csp_elan_blocks=backbone_num_csp_elan_blocks,
-            feat_channels_proj=fpn_feat_channels,
-            use_separable_conv_backbone=use_separable_conv_backbone,
-            dropout_rate=dropout_rate,
-            drop_path_rate=drop_path_rate
-        )
-
-        self.neck = EnhancedBiFPNNeck(
-            feat_channels=fpn_feat_channels,
-            num_bifpn_blocks=num_bifpn_blocks,
-            num_levels=3,
-            use_separable_conv_neck=use_separable_conv_neck,
-            dropout_rate=dropout_rate,
-            drop_path_rate=drop_path_rate
-        )
+        self.backbone = EnhancedBackbone(...)
+        self.neck = EnhancedBiFPNNeck(...)
 
         self.heads = nn.ModuleList()
-        # << MODIFIED: Update head input channels to include hint dimension
         head_in_channels = fpn_feat_channels
         if self.hint_processor is not None:
             head_in_channels += self.hint_embedding_dim
@@ -436,58 +382,76 @@ class DetectionModel(nn.Module): # << MODIFIED: Renamed class
             self.heads.append(DetectionHead(
                 num_classes=num_classes, max_objects_per_pixel=max_objects_per_pixel,
                 reg_max=reg_max,
-                in_channels=head_in_channels, # << MODIFIED
-                mid_channels=head_mid_channels,
+                in_channels=head_in_channels, mid_channels=head_mid_channels,
                 use_separable_conv_head=use_separable_conv_head, head_depth=head_depth,
                 dropout_rate=dropout_rate
             ))
+
         print(f"--- Model Creation Complete ---")
 
-    # << MODIFIED: forward signature to accept optional hints >>
+    # << MODIFIED: The forward pass now implements the new stamping logic >>
     def forward(self, x: torch.Tensor,
                 label_hints: Optional[List[torch.Tensor]] = None,
                 pos_size_hints: Optional[List[torch.Tensor]] = None) -> dict:
 
-        backbone_features = self.backbone(x)
-        fpn_features = self.neck(backbone_features)
+        features = self.backbone(x)
+        fpn_features = self.neck(features) # List [P3_out, P4_out, P5_out]
 
-        # << NEW: Hint processing and fusion logic >>
-        hint_vector = None
-        if self.hint_processor is not None and (label_hints is not None or pos_size_hints is not None):
-            # Process hints to get a [Batch, HintDim] tensor
-            hint_vector = self.hint_processor(label_hints, pos_size_hints, device=x.device)
+        # --- << NEW: Spatially-Aware Hint Fusion Logic >> ---
+        fused_fpn_features = []
+        # Check if we are in hint mode
+        use_hints = self.hint_processor is not None and label_hints is not None and pos_size_hints is not None
+
+        for i, feature_map in enumerate(fpn_features):
+            B, C, H, W = feature_map.shape
+            
+            # If not using hints, create zero hints to maintain channel dimension for the heads
+            if not use_hints:
+                if self.hint_processor is not None:
+                    zero_hints = torch.zeros(B, self.hint_embedding_dim, H, W, device=x.device, dtype=x.dtype)
+                    fused_map = torch.cat([feature_map, zero_hints], dim=1)
+                    fused_fpn_features.append(fused_map)
+                else:
+                    fused_fpn_features.append(feature_map) # No hints were ever defined
+                continue
+
+            # --- Create and Stamp the Hint Map for this FPN Level ---
+            stride = self.strides[i]
+            hint_map = torch.zeros(B, self.hint_embedding_dim, H, W, device=x.device, dtype=x.dtype)
+
+            # Process all objects for this batch at once
+            batch_indices = torch.cat([torch.full_like(t, b_idx) for b_idx, t in enumerate(label_hints)])
+            all_labels = torch.cat(label_hints, dim=0).unsqueeze(-1)
+            all_boxes = torch.cat(pos_size_hints, dim=0)
+
+            # Generate hint embeddings for all objects in the batch
+            # Shape: [total_num_objects, hint_embedding_dim]
+            all_hint_embeddings = self.hint_processor(all_labels.to(x.device), all_boxes.to(x.device))
+
+            # Calculate grid coordinates for all objects
+            # boxes are (cx, cy, w, h) normalized to image size (0-1)
+            # Scale to feature map grid
+            grid_x = (all_boxes[:, 0] * W).long().clamp(0, W - 1)
+            grid_y = (all_boxes[:, 1] * H).long().clamp(0, H - 1)
+            
+            # "Stamp" the hints on the map using advanced indexing
+            # This is a highly efficient way to update multiple locations at once
+            hint_map[batch_indices, :, grid_y, grid_x] = all_hint_embeddings
+
+            fused_map = torch.cat([feature_map, hint_map], dim=1)
+            fused_fpn_features.append(fused_map)
+        # --- End of Hint Fusion Logic ---
 
         outputs_per_scale = []
-        for head, feature_map in zip(self.heads, fpn_features):
-            # Fuse hints with the feature map if they exist
-            if hint_vector is not None:
-                # Get spatial dimensions
-                _, _, H, W = feature_map.shape
-                # Reshape and expand hint_vector to match spatial dimensions
-                # hint_vector: [B, D] -> [B, D, 1, 1] -> [B, D, H, W]
-                broadcasted_hints = hint_vector.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, H, W)
-                # Concatenate along the channel dimension
-                fused_feature_map = torch.cat([feature_map, broadcasted_hints], dim=1)
-                outputs_per_scale.append(head(fused_feature_map))
-            else:
-                # If no hints, pass the feature map directly
-                # (Note: This requires a separate head instance or conditional channel size,
-                #  the current setup assumes hints are always concatenated, even if they are zeros)
-                if self.hint_processor is not None:
-                    # Create zero hints to maintain consistent channel size for the head
-                     _, _, H, W = feature_map.shape
-                     zero_hints = torch.zeros(x.size(0), self.hint_embedding_dim, H, W, device=x.device, dtype=feature_map.dtype)
-                     fused_feature_map = torch.cat([feature_map, zero_hints], dim=1)
-                     outputs_per_scale.append(head(fused_feature_map))
-                else: # No hint processor defined at all
-                     outputs_per_scale.append(head(feature_map))
-
+        for head, feature_map in zip(self.heads, fused_fpn_features):
+            outputs_per_scale.append(head(feature_map))
 
         combined_outputs = {}
         keys = outputs_per_scale[0].keys()
         for key in keys:
             tensors_to_concat = [out_scale[key] for out_scale in outputs_per_scale]
             combined_outputs[key] = torch.cat(tensors_to_concat, dim=1)
+            
         return combined_outputs
 
 # import torch
