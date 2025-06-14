@@ -270,7 +270,7 @@ val_loader = DataLoader(
     # persistent_workers=True
 )
 # Training
-epochs=300
+epochs=500
 train(model, train_loader, val_dataloader=val_loader, optimizer=optimizer, loss_fn=loss_fn, 
         class_names=CLASS_NAMES, device=device, epochs=epochs,
         initial_lr=LEARNING_RATE)
