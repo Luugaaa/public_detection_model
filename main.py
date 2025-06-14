@@ -92,12 +92,12 @@ def get_val_transform(target_size=640):
     ], bbox_params=A.BboxParams(format='yolo', label_fields=['class_labels']))
 
 # Initialize components
-# model = DetectionModel(num_classes=len(CLASS_NAMES)).to(device)
+model = DetectionModel(num_classes=len(CLASS_NAMES)).to(device)
 # model = load_model("train/train_128/best.pt", modeltype=DetectionModel, device=device).to(device)
-model = load_model("/kaggle/input/mid-model-140625/best-8.pt", modeltype=DetectionModel, device=device).to(device)
+# model = load_model("/kaggle/input/mid-model-140625/best-8.pt", modeltype=DetectionModel, device=device).to(device)
 
 
-LEARNING_RATE=1e-4
+LEARNING_RATE=1e-3
 optimizer = optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=0.0001) #, weight_decay=0.0005)
 loss_fn = DFL_CIoU_Loss(num_classes=len(CLASS_NAMES))
 
@@ -270,7 +270,7 @@ val_loader = DataLoader(
     # persistent_workers=True
 )
 # Training
-epochs=500
+epochs=300
 train(model, train_loader, val_dataloader=val_loader, optimizer=optimizer, loss_fn=loss_fn, 
         class_names=CLASS_NAMES, device=device, epochs=epochs,
         initial_lr=LEARNING_RATE)

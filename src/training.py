@@ -144,7 +144,7 @@ def evaluate(model_path, eval_val_loader):
 # --- Updated train function ---
 def train(model, train_dataloader, val_dataloader, optimizer, loss_fn, epochs, class_names, device,
           vis_interval=200, val_epochs=10, epoch_vis_interval=10,
-          warmup_epochs=3, initial_lr=3e-4, scheduler_T_max=None, scheduler_eta_min=1e-6,
+          warmup_epochs=3, initial_lr=1e-3, scheduler_T_max=None, scheduler_eta_min=3e-5,
           no_mosaic_epochs=200, reenable_mosaic_epoch=100, reno_mosaic_epoch=50): 
 
     model.to(device)
