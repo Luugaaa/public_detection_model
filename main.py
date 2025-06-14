@@ -97,7 +97,7 @@ model = DetectionModel(num_classes=len(CLASS_NAMES)).to(device)
 # model = load_model("/kaggle/input/mid-model-140625/best-8.pt", modeltype=DetectionModel, device=device).to(device)
 
 
-LEARNING_RATE=1e-3
+LEARNING_RATE=3e-4
 optimizer = optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=0.0001) #, weight_decay=0.0005)
 loss_fn = DFL_CIoU_Loss(num_classes=len(CLASS_NAMES))
 
