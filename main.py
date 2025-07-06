@@ -91,11 +91,35 @@ def get_val_transform(target_size=640):
         #     std=[0.229, 0.224, 0.225]),
     ], bbox_params=A.BboxParams(format='yolo', label_fields=['class_labels']))
 
+def print_model_size(model):
+    """
+    Calculates and prints the model's size.
+    - Total trainable parameters (in millions)
+    - Estimated size in Megabytes (MB)
+    """
+    # Count only the parameters that require gradients (trainable)
+    param_count = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    
+    # Each parameter is a 32-bit float (4 bytes)
+    # Convert bytes to megabytes (1 MB = 1024 * 1024 bytes)
+    param_size_mb = param_count * 4 / (1024**2) 
+    
+    print(f"-------------------------------------------")
+    print(f"📊 Model Size:")
+    print(f"   - Trainable Parameters: {param_count / 1e6:.2f} Million")
+    print(f"   - Estimated Size (MB): {param_size_mb:.2f} MB")
+    print(f"-------------------------------------------")
+    
 # Initialize components
-model = DetectionModel(num_classes=len(CLASS_NAMES)).to(device)
+model = DetectionModel(num_classes=len(CLASS_NAMES),
+                           backbone_base_channels=48,       # Reduced from 78
+                            fpn_feat_channels=78,            # Reduced from 128
+                            head_mid_channels=78,            # Reduced from 128
+                        ).to(device)
 # model = load_model("train/train_128/best.pt", modeltype=DetectionModel, device=device).to(device)
 # model = load_model("/kaggle/input/mid-model-140625/best-8.pt", modeltype=DetectionModel, device=device).to(device)
 
+print_model_size(model)
 
 LEARNING_RATE=3e-4
 optimizer = optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=0.0001) #, weight_decay=0.0005)
