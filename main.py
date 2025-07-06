@@ -111,10 +111,7 @@ def print_model_size(model):
     print(f"-------------------------------------------")
     
 # Initialize components
-model = DetectionModel(num_classes=len(CLASS_NAMES),
-                           backbone_base_channels=48,       # Reduced from 78
-                            fpn_feat_channels=78,            # Reduced from 128
-                            head_mid_channels=78,            # Reduced from 128
+model = DetectionModel(num_classes=len(CLASS_NAMES)
                         ).to(device)
 # model = load_model("train/train_128/best.pt", modeltype=DetectionModel, device=device).to(device)
 # model = load_model("/kaggle/input/mid-model-140625/best-8.pt", modeltype=DetectionModel, device=device).to(device)
